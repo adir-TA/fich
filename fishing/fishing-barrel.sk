@@ -50,8 +50,8 @@ function fishbarrel_maxFish() :: integer:
 # Returns the visual scale multiplier for the current barrel level.
 function fishbarrel_levelScale() :: number:
     set {_level} to ({-fishbarrel::level} ? 1)
-    # level1=1.0, level2=1.5, level3=2.0, level4=2.5, level5=3.0
-    return ({_level} - 1) * 0.5 + 1.0
+    # level1=1.0, level2=1.2, level3=1.4, level4=1.6, level5=1.8
+    return ({_level} - 1) * 0.2 + 1.0
 
 
 # ============================================================
