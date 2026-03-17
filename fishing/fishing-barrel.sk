@@ -182,6 +182,31 @@ function fishbarrel_removeSlot(p: player, slot: integer):
 
 
 # ============================================================
+# REORGANISE FISH ON LEVEL CHANGE
+# ============================================================
+# Smoothly slides all of a player's existing fish displays to
+# their new positions after the barrel level (and thus scale)
+# has changed. Safe to call while the barrel is full.
+
+function fishbarrel_reorganize(p: player):
+    set {_uuid} to uuid of {_p}
+    set {_scale} to fishbarrel_levelScale({_p})
+    set {_max} to fishbarrel_maxFish({_p})
+    loop {_max} times:
+        set {_n} to loop-number
+        if {-fishbarrel::slot::%{_uuid}%::%{_n}%::id} is set:
+            set {_id} to {-fishbarrel::slot::%{_uuid}%::%{_n}%::id}
+            set {_pos} to fishbarrel_slotPos({_n}, {_scale})
+            if {_pos} is set:
+                send teleport packet with id {_id} with location {_pos} to {_p}
+                set {_m} to new metadata packet with id {_id}:
+                    display teleportduration: 10
+                    display transformation: 3
+                    display interpolation: 10
+                send packet {_m} to {_p}
+
+
+# ============================================================
 # FLY ANIMATION + PLACE
 # ============================================================
 
@@ -402,6 +427,7 @@ command /fishbarrel [<text>] [<text>] [<text>]:
                 stop
             set {-fishbarrel::level::%uuid of {_target}%} to {_lvl}
             fishbarrel_updateComposter({_target})
+            fishbarrel_reorganize({_target})
             set {_max} to fishbarrel_maxFish({_target})
             set {_scale} to fishbarrel_levelScale({_target})
             send "&aSet &e%name of {_target}%&a's barrel to &elevel %{_lvl}% &7(x%{_scale}% size, max &f%{_max}% &7fish)." to player
