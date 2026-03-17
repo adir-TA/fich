@@ -71,7 +71,7 @@ function fishbarrel_levelScale() :: number:
 
 function fishbarrel_slotPos(slot: integer) :: location:
     if {-fishbarrel::loc} is not set:
-        return
+        stop
     set {_bx} to floor(x-coord of {-fishbarrel::loc}) + 0.5
     set {_by} to floor(y-coord of {-fishbarrel::loc})
     set {_bz} to floor(z-coord of {-fishbarrel::loc}) + 0.5
@@ -96,7 +96,7 @@ function fishbarrel_slotPos(slot: integer) :: location:
 
     # Odd layers are staggered by 18° for a more natural, brick-like packing
     set {_offset} to 0.0
-    if {_layer} mod 2 = 1:
+    if mod({_layer}, 2) = 1:
         set {_offset} to 18.0
 
     set {_angle} to ({_pos} / 10.0) * 360.0 + {_offset}
