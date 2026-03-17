@@ -7,31 +7,30 @@ import:
 # FISHING BARREL SYSTEM
 # ============================================================
 #
-# A single composter block acts as a global shared barrel.
-# Caught fish fly in a smooth arc to the barrel and rest
-# inside it as item displays, visible to all players.
-# The barrel also renders as a scaled item display that grows
-# with its level.
+# One shared composter location; each player has their own fish
+# stored inside it, visible only to themselves.
 #
 # Commands:
-#   /fishbarrel set          (op) — aim at a composter to register
-#   /fishbarrel level <1-5>  (op) — upgrade/downgrade barrel level
-#   /fishbarrel clear             — empty the barrel (anyone)
+#   /fishbarrel set                  (op) — aim at composter to register
+#   /fishbarrel level <player> <1-5> (op) — set a player's barrel level
+#   /fishbarrel clear <player>       (op) — empty a player's barrel
 #
-# Global variables:
-#   {-fishbarrel::loc}                — the composter location
-#   {-fishbarrel::level}              — barrel level 1-5 (default 1)
-#   {-fishbarrel::count}              — current fish stored
-#   {-fishbarrel::slot::%n%::id}      — fake entity ID for slot n
-#   {-fishbarrel::slot::%n%::fish}    — item stored in slot n
-#   {-fishbarrel::composter::id}      — fake entity ID for the barrel display
+# Per-player variables (keyed by UUID):
+#   {-fishbarrel::level::%uuid%}              — barrel level 1-5 (default 1)
+#   {-fishbarrel::count::%uuid%}              — fish currently stored
+#   {-fishbarrel::slot::%uuid%::%n%::id}      — fake entity ID for slot n
+#   {-fishbarrel::slot::%uuid%::%n%::fish}    — item stored in slot n
+#   {-fishbarrel::composter::id::%uuid%}      — fake entity ID for barrel display
+#
+# Shared variable:
+#   {-fishbarrel::loc}                        — the composter block location
 #
 # Capacity by level:
 #   Level 1 — x1.0 scale — 50  fish
-#   Level 2 — x1.5 scale — 75  fish
-#   Level 3 — x2.0 scale — 100 fish
-#   Level 4 — x2.5 scale — 125 fish
-#   Level 5 — x3.0 scale — 150 fish
+#   Level 2 — x1.2 scale — 75  fish
+#   Level 3 — x1.4 scale — 100 fish
+#   Level 4 — x1.6 scale — 125 fish
+#   Level 5 — x1.8 scale — 150 fish
 #
 # ============================================================
 
@@ -40,36 +39,26 @@ import:
 # LEVEL HELPERS
 # ============================================================
 
-# Returns total fish capacity for the current barrel level.
-function fishbarrel_maxFish() :: integer:
-    set {_level} to ({-fishbarrel::level} ? 1)
-    # level1=50, level2=75, level3=100, level4=125, level5=150
+function fishbarrel_maxFish(p: player) :: integer:
+    set {_level} to ({-fishbarrel::level::%uuid of {_p}%} ? 1)
     return {_level} * 25 + 25
 
-
-# Returns the visual scale multiplier for the current barrel level.
-function fishbarrel_levelScale() :: number:
-    set {_level} to ({-fishbarrel::level} ? 1)
-    # level1=1.0, level2=1.2, level3=1.4, level4=1.6, level5=1.8
+function fishbarrel_levelScale(p: player) :: number:
+    set {_level} to ({-fishbarrel::level::%uuid of {_p}%} ? 1)
     return ({_level} - 1) * 0.2 + 1.0
 
 
 # ============================================================
 # SLOT POSITION HELPER
 # ============================================================
-# Procedural layout — rings of 10 items stacking upward.
+# Takes an explicit scale so callers can pass the player's level
+# scale without needing to thread the player into every call.
 #
-# Fish are placed lower (base y+0.3 instead of y+0.6) so they
-# sit deeper in the bowl rather than floating above it.
-#
-# Odd-numbered layers are offset by 18° relative to even layers,
-# creating a staggered "brick" pattern that looks natural and
-# organised (like fish actually piled in a barrel).
-#
-# Ring radius and layer spacing scale with the barrel level so
-# fish fill the larger visual barrel correctly at higher levels.
+# Rings of 10 items stack upward. Odd layers are offset 18° for
+# a staggered brick-like pattern. Radius and height scale with
+# the barrel level so fish fill the bigger visual barrel.
 
-function fishbarrel_slotPos(slot: integer) :: location:
+function fishbarrel_slotPos(slot: integer, scale: number) :: location:
     if {-fishbarrel::loc} is not set:
         stop
     set {_bx} to floor(x-coord of {-fishbarrel::loc}) + 0.5
@@ -77,24 +66,15 @@ function fishbarrel_slotPos(slot: integer) :: location:
     set {_bz} to floor(z-coord of {-fishbarrel::loc}) + 0.5
     set {_w} to world of {-fishbarrel::loc}
 
-    set {_s} to fishbarrel_levelScale()
-
-    # 0-indexed position
     set {_n} to {_slot} - 1
-
-    # Which ring-layer (10 items per layer)
     set {_layer} to floor({_n} / 10)
-
-    # Position within the current layer (0 = centre, 1-9 = ring)
     set {_pos} to {_n} - ({_layer} * 10)
 
     if {_pos} = 0:
         set {_r} to 0.0
     else:
-        # Ring radius scales with barrel level so fish fill the bigger barrel
-        set {_r} to 0.25 * {_s}
+        set {_r} to 0.25 * {_scale}
 
-    # Odd layers are staggered by 18° for a more natural, brick-like packing
     set {_offset} to 0.0
     if mod({_layer}, 2) = 1:
         set {_offset} to 18.0
@@ -102,36 +82,28 @@ function fishbarrel_slotPos(slot: integer) :: location:
     set {_angle} to ({_pos} / 10.0) * 360.0 + {_offset}
     set {_x} to {_bx} + {_r} * cos({_angle})
     set {_z} to {_bz} + {_r} * sin({_angle})
-
-    # Base y+0.3 puts fish low in the bowl (below the rim at ~y+0.875).
-    # Layer spacing also scales so higher-level barrels stack taller.
-    set {_y} to {_by} + 0.3 + ({_layer} * 0.2 * {_s})
+    set {_y} to {_by} + 0.3 + ({_layer} * 0.2 * {_scale})
 
     return location({_x}, {_y}, {_z}, {_w})
 
 
 # ============================================================
-# COMPOSTER DISPLAY
+# COMPOSTER DISPLAY (per-player)
 # ============================================================
-# A fake item display renders the composter as a scaleable
-# visual. At level 1 it matches the real block; at higher
-# levels it grows so the barrel looks bigger.
 
-# Spawn (or re-spawn) the composter display for one player.
 function fishbarrel_spawnComposterFor(p: player):
     if {-fishbarrel::loc} is not set:
         stop
-    if {-fishbarrel::composter::id} is not set:
-        stop
-    set {_id} to {-fishbarrel::composter::id}
-    set {_s} to fishbarrel_levelScale()
+    set {_uuid} to uuid of {_p}
+    if {-fishbarrel::composter::id::%{_uuid}%} is not set:
+        set {-fishbarrel::composter::id::%{_uuid}%} to random integer between 100000 and 9999999
+    set {_id} to {-fishbarrel::composter::id::%{_uuid}%}
+    set {_s} to fishbarrel_levelScale({_p})
     set {_bx} to floor(x-coord of {-fishbarrel::loc}) + 0.5
     set {_by} to floor(y-coord of {-fishbarrel::loc})
     set {_bz} to floor(z-coord of {-fishbarrel::loc}) + 0.5
     set {_w} to world of {-fishbarrel::loc}
-    # Anchor display so its base sits on the ground at all scales
-    set {_cy} to {_by} + ({_s} / 2.0)
-    set {_loc} to location({_bx}, {_cy}, {_bz}, {_w})
+    set {_loc} to location({_bx}, {_by} + ({_s} / 2.0), {_bz}, {_w})
     spawn fake item display at {_loc} for {_p} with id {_id}
     set {_m} to new metadata packet with id {_id}:
         display item: composter
@@ -144,60 +116,48 @@ function fishbarrel_spawnComposterFor(p: player):
     send packet {_m} to {_p}
 
 
-# Register an ID (if needed) and spawn the composter display for everyone.
-function fishbarrel_spawnComposterAll():
-    if {-fishbarrel::composter::id} is not set:
-        set {-fishbarrel::composter::id} to random integer between 100000 and 9999999
-    loop all players:
-        fishbarrel_spawnComposterFor(loop-player)
-
-
-# Smooth-update the composter display scale for all players (on level change).
-function fishbarrel_updateComposterAll():
-    if {-fishbarrel::composter::id} is not set:
+function fishbarrel_updateComposter(p: player):
+    set {_uuid} to uuid of {_p}
+    if {-fishbarrel::composter::id::%{_uuid}%} is not set:
         stop
     if {-fishbarrel::loc} is not set:
         stop
-    set {_id} to {-fishbarrel::composter::id}
-    set {_s} to fishbarrel_levelScale()
+    set {_id} to {-fishbarrel::composter::id::%{_uuid}%}
+    set {_s} to fishbarrel_levelScale({_p})
     set {_bx} to floor(x-coord of {-fishbarrel::loc}) + 0.5
     set {_by} to floor(y-coord of {-fishbarrel::loc})
     set {_bz} to floor(z-coord of {-fishbarrel::loc}) + 0.5
     set {_w} to world of {-fishbarrel::loc}
-    set {_cy} to {_by} + ({_s} / 2.0)
-    set {_loc} to location({_bx}, {_cy}, {_bz}, {_w})
-    loop all players:
-        send teleport packet with id {_id} with location {_loc} to loop-player
-        set {_m} to new metadata packet with id {_id}:
-            display scale: vector({_s}, {_s}, {_s})
-            display teleportduration: 5
-            display transformation: 3
-            display interpolation: 5
-        send packet {_m} to loop-player
+    set {_loc} to location({_bx}, {_by} + ({_s} / 2.0), {_bz}, {_w})
+    send teleport packet with id {_id} with location {_loc} to {_p}
+    set {_m} to new metadata packet with id {_id}:
+        display scale: vector({_s}, {_s}, {_s})
+        display teleportduration: 5
+        display transformation: 3
+        display interpolation: 5
+    send packet {_m} to {_p}
 
 
-# Remove the composter display for all players and clean up.
-function fishbarrel_removeComposterAll():
-    if {-fishbarrel::composter::id} is not set:
+function fishbarrel_removeComposter(p: player):
+    set {_uuid} to uuid of {_p}
+    if {-fishbarrel::composter::id::%{_uuid}%} is not set:
         stop
-    set {_id} to {-fishbarrel::composter::id}
-    loop all players:
-        remove fake entity with id {_id} for loop-player
-    delete {-fishbarrel::composter::id}
+    remove fake entity with id {-fishbarrel::composter::id::%{_uuid}%} for {_p}
+    delete {-fishbarrel::composter::id::%{_uuid}%}
 
 
 # ============================================================
-# DISPLAY MANAGEMENT
+# DISPLAY MANAGEMENT (per-player slots)
 # ============================================================
 
-# Spawn the resting item display for one specific slot, for a
-# single player (used on join to catch up with current state).
 function fishbarrel_spawnSlotFor(p: player, slot: integer):
-    if {-fishbarrel::slot::%{_slot}%::id} is not set:
+    set {_uuid} to uuid of {_p}
+    if {-fishbarrel::slot::%{_uuid}%::%{_slot}%::id} is not set:
         stop
-    set {_id} to {-fishbarrel::slot::%{_slot}%::id}
-    set {_fish} to {-fishbarrel::slot::%{_slot}%::fish}
-    set {_pos} to fishbarrel_slotPos({_slot})
+    set {_id} to {-fishbarrel::slot::%{_uuid}%::%{_slot}%::id}
+    set {_fish} to {-fishbarrel::slot::%{_uuid}%::%{_slot}%::fish}
+    set {_scale} to fishbarrel_levelScale({_p})
+    set {_pos} to fishbarrel_slotPos({_slot}, {_scale})
     if {_pos} is not set:
         stop
     spawn fake item display at {_pos} for {_p} with id {_id}
@@ -212,42 +172,30 @@ function fishbarrel_spawnSlotFor(p: player, slot: integer):
     send packet {_m} to {_p}
 
 
-# Spawn the resting display for a slot for ALL online players.
-function fishbarrel_spawnSlotAll(slot: integer):
-    loop all players:
-        fishbarrel_spawnSlotFor(loop-player, {_slot})
-
-
-# Remove a slot's display for ALL online players and clean vars.
-function fishbarrel_removeSlotAll(slot: integer):
-    if {-fishbarrel::slot::%{_slot}%::id} is not set:
+function fishbarrel_removeSlot(p: player, slot: integer):
+    set {_uuid} to uuid of {_p}
+    if {-fishbarrel::slot::%{_uuid}%::%{_slot}%::id} is not set:
         stop
-    set {_id} to {-fishbarrel::slot::%{_slot}%::id}
-    loop all players:
-        remove fake entity with id {_id} for loop-player
-    delete {-fishbarrel::slot::%{_slot}%::id}
-    delete {-fishbarrel::slot::%{_slot}%::fish}
+    remove fake entity with id {-fishbarrel::slot::%{_uuid}%::%{_slot}%::id} for {_p}
+    delete {-fishbarrel::slot::%{_uuid}%::%{_slot}%::id}
+    delete {-fishbarrel::slot::%{_uuid}%::%{_slot}%::fish}
 
 
 # ============================================================
 # FLY ANIMATION + PLACE
 # ============================================================
-# Spawns a glowing item display at the hook, arcs it smoothly
-# to the composter slot over 20 ticks, then places the resting
-# display visible to all players.
 
 function fishbarrel_flyAndPlace(p: player, hookLoc: location, slot: integer, fishItem: item):
-    # Register slot data up-front so join handler can re-spawn it
-    # even while the animation is still running.
+    set {_uuid} to uuid of {_p}
     set {_id} to random integer between 100000 and 9999999
-    set {-fishbarrel::slot::%{_slot}%::id} to {_id}
-    set {-fishbarrel::slot::%{_slot}%::fish} to {_fishItem}
+    set {-fishbarrel::slot::%{_uuid}%::%{_slot}%::id} to {_id}
+    set {-fishbarrel::slot::%{_uuid}%::%{_slot}%::fish} to {_fishItem}
 
-    set {_dest} to fishbarrel_slotPos({_slot})
+    set {_scale} to fishbarrel_levelScale({_p})
+    set {_dest} to fishbarrel_slotPos({_slot}, {_scale})
     if {_dest} is not set:
         stop
 
-    # Cache coords for the flight loop
     set {_sx} to x-coord of {_hookLoc}
     set {_sy} to y-coord of {_hookLoc}
     set {_sz} to z-coord of {_hookLoc}
@@ -256,7 +204,6 @@ function fishbarrel_flyAndPlace(p: player, hookLoc: location, slot: integer, fis
     set {_ez} to z-coord of {_dest}
     set {_w} to world of {_hookLoc}
 
-    # --- spawn fly entity (catcher only) ---
     set {_flyId} to random integer between 100000 and 9999999
     spawn fake item display at {_hookLoc} for {_p} with id {_flyId}
     set {_m} to new metadata packet with id {_flyId}:
@@ -273,7 +220,6 @@ function fishbarrel_flyAndPlace(p: player, hookLoc: location, slot: integer, fis
 
     wait 1 tick
 
-    # Pop into full fly size
     set {_m} to new metadata packet with id {_flyId}:
         display scale: vector(0.38, 0.38, 0.38)
         display transformation: 4
@@ -282,8 +228,6 @@ function fishbarrel_flyAndPlace(p: player, hookLoc: location, slot: integer, fis
 
     play sound "entity.fishing_bobber.splash" with volume 0.5 and pitch 1.3 to {_p}
 
-    # Arc flight — 20 ticks (1 second)
-    # Y uses sin() for a natural parabolic feel; X/Z are linear.
     loop 20 times:
         set {_t} to loop-number / 20.0
         set {_arcY} to sin({_t} * 180) * 1.4
@@ -293,7 +237,6 @@ function fishbarrel_flyAndPlace(p: player, hookLoc: location, slot: integer, fis
         send teleport packet with id {_flyId} with location location({_nx}, {_ny}, {_nz}, {_w}) to {_p}
         wait 1 tick
 
-    # Shrink slightly on arrival for a satisfying "settle" feel
     set {_m} to new metadata packet with id {_flyId}:
         display scale: vector(0.22, 0.22, 0.22)
         display transformation: 5
@@ -302,15 +245,13 @@ function fishbarrel_flyAndPlace(p: player, hookLoc: location, slot: integer, fis
 
     wait 2 ticks
 
-    # Remove the temporary fly entity
     remove fake entity with id {_flyId} for {_p}
+    fishbarrel_spawnSlotFor({_p}, {_slot})
 
-    # Spawn the permanent resting display for every online player
-    fishbarrel_spawnSlotAll({_slot})
-
-    set {_max} to fishbarrel_maxFish()
+    set {_max} to fishbarrel_maxFish({_p})
+    set {_count} to ({-fishbarrel::count::%{_uuid}%} ? 0)
     play sound "entity.item.pickup" with volume 0.7 and pitch 1.3 to {_p}
-    send action bar "&b&l✦ Fish stored in barrel! &7(%{-fishbarrel::count}%/%{_max}%)" to {_p}
+    send action bar "&b&l✦ Fish stored in barrel! &7(%{_count}%/%{_max}%)" to {_p}
 
 
 # ============================================================
@@ -318,24 +259,22 @@ function fishbarrel_flyAndPlace(p: player, hookLoc: location, slot: integer, fis
 # ============================================================
 
 function fishbarrel_addFish(p: player, hookLoc: location):
-    # No barrel set — give item directly
     if {-fishbarrel::loc} is not set:
         give cod to {_p}
         stop
 
-    set {_count} to ({-fishbarrel::count} ? 0)
-    set {_max} to fishbarrel_maxFish()
+    set {_uuid} to uuid of {_p}
+    set {_count} to ({-fishbarrel::count::%{_uuid}%} ? 0)
+    set {_max} to fishbarrel_maxFish({_p})
 
-    # Barrel full — notify and give to inventory
     if {_count} >= {_max}:
         send action bar "&c&lBarrel is full! &7(%{_max}%/%{_max}%) — Fish added to inventory." to {_p}
         give cod to {_p}
         stop
 
-    # Find the first empty slot
     set {_slot} to 0
     loop {_max} times:
-        if {-fishbarrel::slot::%loop-number%::id} is not set:
+        if {-fishbarrel::slot::%{_uuid}%::%loop-number%::id} is not set:
             set {_slot} to loop-number
             stop loop
 
@@ -343,28 +282,26 @@ function fishbarrel_addFish(p: player, hookLoc: location):
         give cod to {_p}
         stop
 
-    add 1 to {-fishbarrel::count}
+    add 1 to {-fishbarrel::count::%{_uuid}%}
     fishbarrel_flyAndPlace({_p}, {_hookLoc}, {_slot}, cod)
 
 
 # ============================================================
-# CLEAR ALL FISH
+# CLEAR A PLAYER'S FISH
 # ============================================================
 
-function fishbarrel_clearAll():
-    set {_max} to fishbarrel_maxFish()
+function fishbarrel_clearPlayer(p: player):
+    set {_uuid} to uuid of {_p}
+    set {_max} to fishbarrel_maxFish({_p})
     loop {_max} times:
-        set {_n} to loop-number
-        if {-fishbarrel::slot::%{_n}%::id} is set:
-            fishbarrel_removeSlotAll({_n})
-    set {-fishbarrel::count} to 0
+        fishbarrel_removeSlot({_p}, loop-number)
+    set {-fishbarrel::count::%{_uuid}%} to 0
 
 
 # ============================================================
 # FISHING EVENTS
 # ============================================================
 
-# --- fast bite: minimise wait time so the hook bites instantly ---
 on PlayerFishEvent:
     if event.getState() != State.FISHING:
         stop
@@ -376,7 +313,6 @@ on PlayerFishEvent:
     {_hook}.setApplyLure(false)
 
 
-# --- block vanilla loot + XP so we control the reward ---
 on PlayerFishEvent:
     if event.getState() != State.CAUGHT_FISH:
         stop
@@ -385,7 +321,6 @@ on PlayerFishEvent:
     event.setExpToDrop(0)
 
 
-# --- on bite: route fish to barrel (or inventory if no barrel) ---
 on PlayerFishEvent:
     if event.getState() != State.BITE:
         stop
@@ -396,10 +331,9 @@ on PlayerFishEvent:
     fishbarrel_addFish({_p}, {_hook}.getLocation())
 
 
-# --- on join: re-spawn all current barrel displays for the player ---
 on join:
     wait 5 ticks
-    set {_max} to fishbarrel_maxFish()
+    set {_max} to fishbarrel_maxFish(player)
     loop {_max} times:
         fishbarrel_spawnSlotFor(player, loop-number)
     fishbarrel_spawnComposterFor(player)
@@ -409,14 +343,14 @@ on join:
 # COMMANDS
 # ============================================================
 
-command /fishbarrel [<text>] [<text>]:
+command /fishbarrel [<text>] [<text>] [<text>]:
     trigger:
         if arg-1 is not set:
             send "" to player
             send "&b&lFish Barrel" to player
             send "&7/fishbarrel set &8— &7(Admin) Aim at a composter to register it" to player
-            send "&7/fishbarrel level <1-5> &8— &7(Admin) Set barrel level and capacity" to player
-            send "&7/fishbarrel clear &8— &7Empty the barrel" to player
+            send "&7/fishbarrel level <player> <1-5> &8— &7(Admin) Set a player's barrel level" to player
+            send "&7/fishbarrel clear <player> &8— &7(Admin) Empty a player's barrel" to player
             send "" to player
             stop
 
@@ -432,10 +366,12 @@ command /fishbarrel [<text>] [<text>]:
             if type of {_tb} is not composter:
                 send "&cThat block is not a composter!" to player
                 stop
-            # Remove any existing composter display before re-registering
-            fishbarrel_removeComposterAll()
+            # Remove every online player's old composter display then re-spawn
+            loop all players:
+                fishbarrel_removeComposter(loop-player)
             set {-fishbarrel::loc} to location of {_tb}
-            fishbarrel_spawnComposterAll()
+            loop all players:
+                fishbarrel_spawnComposterFor(loop-player)
             send "&aFish barrel registered at &e%{-fishbarrel::loc}%&a!" to player
             stop
 
@@ -445,32 +381,51 @@ command /fishbarrel [<text>] [<text>]:
                 send "&cYou don't have permission to do that." to player
                 stop
             if arg-2 is not set:
-                send "&cUsage: &e/fishbarrel level <1-5>" to player
+                send "&cUsage: &e/fishbarrel level <player> <1-5>" to player
                 stop
-            set {_lvl} to arg-2 parsed as integer
+            if arg-3 is not set:
+                send "&cUsage: &e/fishbarrel level <player> <1-5>" to player
+                stop
+            set {_target} to arg-2 parsed as player
+            if {_target} is not set:
+                send "&cPlayer '&e%arg-2%&c' is not online." to player
+                stop
+            set {_lvl} to arg-3 parsed as integer
             if {_lvl} is not set:
-                send "&cInvalid level. Please enter a number between 1 and 5." to player
+                send "&cInvalid level. Enter a number between 1 and 5." to player
                 stop
-            if {_lvl} < 1 or {_lvl} > 5:
+            if {_lvl} < 1:
                 send "&cLevel must be between &e1 &cand &e5&c." to player
                 stop
-            set {-fishbarrel::level} to {_lvl}
-            # Smoothly scale the composter display to match the new level
-            fishbarrel_updateComposterAll()
-            set {_max} to fishbarrel_maxFish()
-            set {_scale} to fishbarrel_levelScale()
-            send "&aBarrel upgraded to &elevel %{_lvl}% &7(x%{_scale}% size, max &f%{_max}% &7fish)." to player
+            if {_lvl} > 5:
+                send "&cLevel must be between &e1 &cand &e5&c." to player
+                stop
+            set {-fishbarrel::level::%uuid of {_target}%} to {_lvl}
+            fishbarrel_updateComposter({_target})
+            set {_max} to fishbarrel_maxFish({_target})
+            set {_scale} to fishbarrel_levelScale({_target})
+            send "&aSet &e%name of {_target}%&a's barrel to &elevel %{_lvl}% &7(x%{_scale}% size, max &f%{_max}% &7fish)." to player
+            send "&7Your barrel was upgraded to &elevel %{_lvl}% &7by an admin." to {_target}
             stop
 
         # ── CLEAR ────────────────────────────────────────────
         else if arg-1 = "clear":
-            set {_count} to ({-fishbarrel::count} ? 0)
-            if {_count} = 0:
-                send "&7The barrel is already empty." to player
+            if player does not have permission "op":
+                send "&cYou don't have permission to do that." to player
                 stop
-            fishbarrel_clearAll()
-            send "&aBarrel cleared! &7Removed &f%{_count}% &7fish." to player
-            play sound "entity.item.pickup" with volume 0.6 and pitch 0.9 to player
+            if arg-2 is not set:
+                send "&cUsage: &e/fishbarrel clear <player>" to player
+                stop
+            set {_target} to arg-2 parsed as player
+            if {_target} is not set:
+                send "&cPlayer '&e%arg-2%&c' is not online." to player
+                stop
+            set {_count} to ({-fishbarrel::count::%uuid of {_target}%} ? 0)
+            if {_count} = 0:
+                send "&7%name of {_target}%'s barrel is already empty." to player
+                stop
+            fishbarrel_clearPlayer({_target})
+            send "&aCleared &e%name of {_target}%&a's barrel. &7Removed &f%{_count}% &7fish." to player
             stop
 
         # ── UNKNOWN ──────────────────────────────────────────
