@@ -11,9 +11,8 @@ import:
 # Caught fish fly in a smooth arc to the barrel and rest
 # inside it as item displays, visible to all players.
 #
-# Slots are hardcoded to 5. To support more fish later:
-#   1. Raise the "5" literals (search: "# SCALE")
-#   2. Add more else-if branches in fishbarrel_slotPos()
+# Slot cap is 50. To raise it further, search "# SCALE" and
+# bump each "50" literal. fishbarrel_slotPos() needs no changes.
 #
 # Commands:
 #   /fishbarrel set    (op) — aim at a composter to register it
@@ -31,9 +30,13 @@ import:
 # ============================================================
 # SLOT POSITION HELPER
 # ============================================================
-# Returns the world position for a given slot index (1-5).
-# Layout: 4-corner bottom layer + 1 raised centre on top.
-# To add more slots, append else-if branches here. (# SCALE)
+# Procedural layout — rings of 10 items stacking upward.
+# Layer 0 (slots 1-10)  sits at y+0.6, inside the bowl opening.
+# Each subsequent layer adds 0.28 in height, creating a pile
+# that grows visibly above the composter rim.
+#
+# To raise the cap beyond 50: only change the "50" literals
+# marked # SCALE elsewhere. No changes needed here.
 
 function fishbarrel_slotPos(slot: integer) :: location:
     if {-fishbarrel::loc} is not set:
@@ -43,16 +46,29 @@ function fishbarrel_slotPos(slot: integer) :: location:
     set {_bz} to floor(z-coord of {-fishbarrel::loc}) + 0.5
     set {_w} to world of {-fishbarrel::loc}
 
-    if {_slot} = 1:
-        return location({_bx} - 0.17, {_by} + 0.27, {_bz} - 0.17, {_w})
-    else if {_slot} = 2:
-        return location({_bx} + 0.17, {_by} + 0.27, {_bz} - 0.17, {_w})
-    else if {_slot} = 3:
-        return location({_bx} - 0.17, {_by} + 0.27, {_bz} + 0.17, {_w})
-    else if {_slot} = 4:
-        return location({_bx} + 0.17, {_by} + 0.27, {_bz} + 0.17, {_w})
-    else if {_slot} = 5:
-        return location({_bx}, {_by} + 0.52, {_bz}, {_w})
+    # 0-indexed position
+    set {_n} to {_slot} - 1
+
+    # Which ring-layer (10 items per layer)
+    set {_layer} to floor({_n} / 10)
+
+    # Position within the current layer (0 = centre, 1-9 = ring)
+    set {_pos} to {_n} - ({_layer} * 10)
+
+    if {_pos} = 0:
+        set {_r} to 0.0
+    else:
+        set {_r} to 0.22
+
+    set {_angle} to ({_pos} / 10.0) * 360.0
+    set {_x} to {_bx} + {_r} * cos({_angle})
+    set {_z} to {_bz} + {_r} * sin({_angle})
+    # y+0.6 keeps layer 0 inside the bowl opening (above the bowl
+    # floor at ~y+0.125, below the rim at ~y+0.875) so items are
+    # visible from above without clipping through solid geometry.
+    set {_y} to {_by} + 0.6 + ({_layer} * 0.28)
+
+    return location({_x}, {_y}, {_z}, {_w})
 
 
 # ============================================================
@@ -178,7 +194,7 @@ function fishbarrel_flyAndPlace(p: player, hookLoc: location, slot: integer, fis
     fishbarrel_spawnSlotAll({_slot})
 
     play sound "entity.item.pickup" with volume 0.7 and pitch 1.3 to {_p}
-    send action bar "&b&l✦ Fish stored in barrel! &7(%{-fishbarrel::count}%/5)" to {_p}
+    send action bar "&b&l✦ Fish stored in barrel! &7(%{-fishbarrel::count}%/50)" to {_p}
 
 
 # ============================================================
@@ -194,14 +210,14 @@ function fishbarrel_addFish(p: player, hookLoc: location):
     set {_count} to ({-fishbarrel::count} ? 0)
 
     # Barrel full — notify and give to inventory
-    if {_count} >= 5:  # SCALE: raise this cap when adding more slots
-        send action bar "&c&lBarrel is full! &7(5/5) — Fish added to inventory." to {_p}
+    if {_count} >= 50:  # SCALE
+        send action bar "&c&lBarrel is full! &7(50/50) — Fish added to inventory." to {_p}
         give cod to {_p}
         stop
 
-    # Find the first empty slot (1-5)  # SCALE: raise loop count when adding more slots
+    # Find the first empty slot (1-50)  # SCALE
     set {_slot} to 0
-    loop 5 times:
+    loop 50 times:
         if {-fishbarrel::slot::%loop-number%::id} is not set:
             set {_slot} to loop-number
             stop loop
@@ -219,7 +235,7 @@ function fishbarrel_addFish(p: player, hookLoc: location):
 # ============================================================
 
 function fishbarrel_clearAll():
-    loop 5 times:  # SCALE: raise to match max slots
+    loop 50 times:  # SCALE
         set {_n} to loop-number
         if {-fishbarrel::slot::%{_n}%::id} is set:
             fishbarrel_removeSlotAll({_n})
@@ -265,7 +281,7 @@ on PlayerFishEvent:
 # --- on join: re-spawn all current barrel displays for the player ---
 on join:
     wait 5 ticks
-    loop 5 times:  # SCALE: raise to match max slots
+    loop 50 times:  # SCALE
         fishbarrel_spawnSlotFor(player, loop-number)
 
 
