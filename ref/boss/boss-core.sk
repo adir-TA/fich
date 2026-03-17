@@ -1,0 +1,393 @@
+# ============================================================
+# BOSS CORE SYSTEM
+# ============================================================
+#
+# Handles spawning, despawning, damage tracking, and death.
+# Bosses are world entities — anyone can hit them.
+# Last hitter receives loot.
+#
+# Active Instance Variables:
+#   {boss::active::%id%::alive}               → boolean
+#   {boss::active::%id%::entity}              → the entity reference
+#   {boss::active::%id%::hp}                  → current HP
+#   {boss::active::%id%::lastHitter}          → last player who dealt damage
+#   {boss::active::%id%::phasesTriggered::*}  → which thresholds already fired
+#   {boss::active::%id%::minions::*}          → list of minion entity UUIDs
+#   {boss::active::%id%::buffRain}            → rain buff active
+#   {boss::active::%id%::buffRampage}         → rampage buff active
+#
+# ============================================================
+
+# ============================================================
+# SPAWN
+# ============================================================
+
+function boss_spawn(id: text):
+    # Check if already alive
+    if {boss::active::%{_id}%::alive} is true:
+        stop
+
+    # Check if registered
+    if boss_isRegistered({_id}) is false:
+        stop
+
+    # Check if spawn location is set
+    set {_loc} to boss_getSpawnLoc({_id})
+    if {_loc} is not set:
+        stop
+
+    set {_name} to boss_getName({_id})
+
+    # Broadcast warning first
+    broadcast ""
+    broadcast "&b&l⚔ BOSS INCOMING ⚔"
+    broadcast "&7%{_name}% &7is awakening..."
+    broadcast ""
+
+    # Play per-boss spawn animation — each calls boss_spawnFinish() at the end
+    if {_id} is "poseidon":
+        boss_anim_spawn({_loc}, {_name}, {_id})
+    else if {_id} is "dragon":
+        dragon_anim_spawn({_loc}, {_name}, {_id})
+    else if {_id} is "ares":
+        ares_anim_spawn({_loc}, {_name}, {_id})
+    else if {_id} is "hades":
+        hades_anim_spawn({_loc}, {_name}, {_id})
+    else if {_id} is "apollo":
+        apollo_anim_spawn({_loc}, {_name}, {_id})
+    else:
+        boss_anim_spawn({_loc}, {_name}, {_id})
+
+
+# Called by boss_anim_spawn at the end of the animation
+function boss_spawnFinish(id: text):
+    set {_loc} to boss_getSpawnLoc({_id})
+    if {_loc} is not set:
+        stop
+
+    set {_name} to boss_getName({_id})
+    set {_maxHp} to boss_getMaxHp({_id})
+    set {_entityType} to boss_getEntityType({_id})
+
+    # NOW spawn the actual entity
+    spawn 1 of {_entityType} parsed as entity type at {_loc}
+    set {_entity} to last spawned entity
+
+    # Configure entity
+    set custom name of {_entity} to {_name}
+    set maximum health of {_entity} to 2048
+    set health of {_entity} to 2048
+    set {_entity}'s ai to true
+
+    # Store active data
+    set {boss::active::%{_id}%::alive} to true
+    set {boss::active::%{_id}%::entity} to {_entity}
+    set {boss::active::%{_id}%::hp} to {_maxHp}
+    set {boss::active::%{_id}%::lastHitter} to "none"
+    delete {boss::active::%{_id}%::phasesTriggered::*}
+    delete {boss::active::%{_id}%::minions::*}
+    delete {boss::active::%{_id}%::buffRain}
+    delete {boss::active::%{_id}%::buffRampage}
+
+    # Boss-specific entity setup (armor, equipment, etc)
+    boss_setupEntity({_id}, {_entity})
+
+    # Spawn HUD after entity exists
+    boss_hud_create({_id}, {_entity})
+
+    # Broadcast arrival
+    broadcast ""
+    broadcast "&b&l⚔ %{_name}% &b&lHAS ARRIVED ⚔"
+    broadcast ""
+
+    loop all players in world of {_loc}:
+        play sound "entity.ender_dragon.growl" with volume 0.5 and pitch 0.8 to loop-player
+
+    # Start leash loop — keeps boss near spawn
+    boss_leashLoop({_id})
+
+    # Start 5-minute timeout — force kill if not dead
+    boss_timeoutTimer({_id})
+
+# ============================================================
+# DESPAWN / FORCE KILL
+# ============================================================
+
+function boss_forceKill(id: text):
+    if {boss::active::%{_id}%::alive} is not true:
+        stop
+
+    # Kill entity
+    set {_entity} to {boss::active::%{_id}%::entity}
+    if {_entity} is set:
+        kill {_entity}
+
+    # Clear minions
+    boss_clearMinions({_id})
+
+    # Remove HUD
+    boss_hud_remove({_id})
+
+    # Clean up data
+    boss_cleanup({_id})
+
+# ============================================================
+# DAMAGE HANDLING
+# ============================================================
+
+function boss_dealDamage(p: player, id: text, amount: number):
+    if {boss::active::%{_id}%::alive} is not true:
+        stop
+
+    # Subtract HP
+    subtract {_amount} from {boss::active::%{_id}%::hp}
+    set {boss::active::%{_id}%::lastHitter} to {_p}
+
+    # Clamp to 0
+    if {boss::active::%{_id}%::hp} <= 0:
+        set {boss::active::%{_id}%::hp} to 0
+
+    # Update HUD + floating damage number
+    boss_hud_update({_id})
+    boss_hud_damagePopup({_p}, {_id}, {_amount})
+
+    # Check phases
+    boss_checkPhases({_id})
+
+    # Check death
+    if {boss::active::%{_id}%::hp} <= 0:
+        boss_die({_id})
+
+# ============================================================
+# DEATH
+# ============================================================
+
+function boss_die(id: text):
+    set {_name} to boss_getName({_id})
+    set {_lastHitter} to {boss::active::%{_id}%::lastHitter}
+
+    # Get entity location before killing
+    set {_entity} to {boss::active::%{_id}%::entity}
+    if {_entity} is set:
+        set {_deathLoc} to location of {_entity}
+        kill {_entity}
+
+    # Clear minions
+    boss_clearMinions({_id})
+
+    # Remove HUD
+    boss_hud_remove({_id})
+
+    # Death animation (explosion particles + skull text)
+    if {_deathLoc} is set:
+        boss_anim_death({_deathLoc}, {_name})
+
+    # Broadcast death
+    broadcast ""
+    broadcast "&c&l☠ BOSS DEFEATED ☠"
+    if {_lastHitter} is a player:
+        broadcast "&7%{_name}% &7was slain by &e%{_lastHitter}%&7!"
+        # Roll loot for last hitter
+        boss_rollLoot({_lastHitter}, {_id})
+    else:
+        broadcast "&7%{_name}% &7has been defeated!"
+    broadcast ""
+
+    # Clean up
+    boss_cleanup({_id})
+
+    # Start respawn timer
+    boss_respawnTimer({_id})
+
+# ============================================================
+# LEASH LOOP — keep boss near spawn
+# ============================================================
+
+function boss_leashLoop(id: text):
+    while {boss::active::%{_id}%::alive} is true:
+        set {_entity} to {boss::active::%{_id}%::entity}
+        if {_entity} is not set:
+            stop
+
+        set {_spawnLoc} to boss_getSpawnLoc({_id})
+        if {_spawnLoc} is not set:
+            stop
+
+        set {_currentLoc} to location of {_entity}
+        set {_dist} to distance between {_currentLoc} and {_spawnLoc}
+
+        if {_dist} > 20:
+            # Teleport boss back to spawn
+            teleport {_entity} to {_spawnLoc}
+
+            # Teleport all minions back too
+            loop {boss::active::%{_id}%::minions::*}:
+                set {_minionUuid} to loop-value
+                set {_minion} to {-boss::minion::%{_minionUuid}%::entity}
+                if {_minion} is set:
+                    set {_minionOffset} to {_spawnLoc}
+                    add (random number between -2 and 2) to x-coord of {_minionOffset}
+                    add (random number between -2 and 2) to z-coord of {_minionOffset}
+                    teleport {_minion} to {_minionOffset}
+
+        wait 30 ticks
+
+# ============================================================
+# TIMEOUT — force kill after 5 minutes
+# ============================================================
+
+function boss_timeoutTimer(id: text):
+    wait 6000 ticks
+    if {boss::active::%{_id}%::alive} is true:
+        set {_name} to boss_getName({_id})
+        broadcast ""
+        broadcast "&7%{_name}% &7has retreated..."
+        broadcast ""
+        boss_forceKill({_id})
+        boss_respawnTimer({_id})
+
+# ============================================================
+# RESPAWN TIMER
+# ============================================================
+
+function boss_respawnTimer(id: text):
+    set {_respawnTicks} to boss_getRespawnTime({_id})
+    if {_respawnTicks} <= 0:
+        stop
+
+    # Check if spawn location exists
+    set {_loc} to boss_getSpawnLoc({_id})
+    if {_loc} is not set:
+        stop
+
+    set {_name} to boss_getName({_id})
+    set {_minutes} to {_respawnTicks} / 1200
+
+    broadcast "&7%{_name}% &7will respawn in &e%{_minutes}% &7minutes."
+
+    wait {_respawnTicks} ticks
+
+    # Only respawn if not already alive and spawn loc still set
+    if {boss::active::%{_id}%::alive} is not true:
+        set {_loc2} to boss_getSpawnLoc({_id})
+        if {_loc2} is set:
+            boss_spawn({_id})
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+function boss_cleanup(id: text):
+    delete {boss::active::%{_id}%::alive}
+    delete {boss::active::%{_id}%::entity}
+    delete {boss::active::%{_id}%::hp}
+    delete {boss::active::%{_id}%::lastHitter}
+    delete {boss::active::%{_id}%::phasesTriggered::*}
+    delete {boss::active::%{_id}%::minions::*}
+    delete {boss::active::%{_id}%::buffRain}
+    delete {boss::active::%{_id}%::buffRampage}
+
+# ============================================================
+# STATUS HELPERS
+# ============================================================
+
+function boss_isAlive(id: text) :: boolean:
+    if {boss::active::%{_id}%::alive} is true:
+        return true
+    return false
+
+function boss_getHp(id: text) :: number:
+    return {boss::active::%{_id}%::hp} ? 0
+
+function boss_getHpPercent(id: text) :: number:
+    set {_hp} to {boss::active::%{_id}%::hp} ? 0
+    set {_maxHp} to boss_getMaxHp({_id})
+    if {_maxHp} <= 0:
+        return 0
+    return ({_hp} / {_maxHp}) * 100
+
+function boss_getEntity(id: text) :: entity:
+    return {boss::active::%{_id}%::entity}
+
+function boss_getLastHitter(id: text) :: player:
+    return {boss::active::%{_id}%::lastHitter}
+
+# Find boss ID from entity
+function boss_getIdFromEntity(e: entity) :: text:
+    loop {-boss::registry::ids::*}:
+        if {boss::active::%loop-value%::alive} is true:
+            if {boss::active::%loop-value%::entity} is {_e}:
+                return loop-value
+    return ""
+
+# ============================================================
+# DAMAGE EVENT
+# ============================================================
+
+# ============================================================
+# ENTITY SETUP (armor, equipment per boss)
+# ============================================================
+
+function boss_setupEntity(id: text, entity: entity):
+    if {_id} is "dragon":
+        dragon_setup({_entity})
+    else if {_id} is "ares":
+        ares_setup({_entity})
+    else if {_id} is "hades":
+        hades_setup({_entity})
+    else if {_id} is "apollo":
+        apollo_setup({_entity})
+
+# ============================================================
+# DAMAGE EVENTS (one per entity type)
+# ============================================================
+
+on damage of elder guardian:
+    set {_bossId} to boss_getIdFromEntity(victim)
+    if {_bossId} != "":
+        set {_damage} to damage
+        set damage to 0
+        if attacker is a player:
+            boss_dealDamage(attacker, {_bossId}, {_damage})
+
+on damage of wither skeleton:
+    set {_bossId} to boss_getIdFromEntity(victim)
+    if {_bossId} != "":
+        set {_damage} to damage
+        set damage to 0
+        if attacker is a player:
+            boss_dealDamage(attacker, {_bossId}, {_damage})
+
+on damage of piglin brute:
+    set {_bossId} to boss_getIdFromEntity(victim)
+    if {_bossId} != "":
+        set {_damage} to damage
+        set damage to 0
+        if attacker is a player:
+            boss_dealDamage(attacker, {_bossId}, {_damage})
+
+on damage of vindicator:
+    set {_bossId} to boss_getIdFromEntity(victim)
+    if {_bossId} != "":
+        set {_damage} to damage
+        set damage to 0
+        if attacker is a player:
+            boss_dealDamage(attacker, {_bossId}, {_damage})
+
+on damage of skeleton:
+    set {_bossId} to boss_getIdFromEntity(victim)
+    if {_bossId} != "":
+        set {_damage} to damage
+        set damage to 0
+        if attacker is a player:
+            boss_dealDamage(attacker, {_bossId}, {_damage})
+
+# ============================================================
+# ENTITY TRANSFORM — prevent piglin brute zombification
+# ============================================================
+
+on entity transform:
+    set {_bossId} to boss_getIdFromEntity(event-entity)
+    if {_bossId} != "":
+        cancel event
+        boss_setupEntity({_bossId}, event-entity)

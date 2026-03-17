@@ -1,0 +1,486 @@
+# ============================================================
+# MULTIPLIER SYSTEM (UPDATED WITH ARMOR + ACCESSORY + SKILL TREE BONUSES)
+# ============================================================
+#
+# Cached multipliers - recalculated every 15 seconds or on stat change
+#
+# Cache Variables (runtime only):
+#   {-multiplier::%uuid%::<type>}
+#
+# Multiplier Types:
+#   - mining_speed
+#   - drops
+#   - xp
+#   - token
+#   - enchant_proc
+#   - damage
+#   - durability
+#
+# ============================================================
+# ARCHETYPE BONUSES (NO LEVEL/PRESTIGE SCALING)
+# ============================================================
+#
+# PRECISION - Fast single-target miner
+#   +5% Mining Speed
+#   +15% Damage
+#   +30% Tokens
+#   +30% XP
+#
+# DEMOLITION - Tanky AOE miner
+#   -15% Tokens
+#   -10% XP
+#   -10% Enchant Proc
+#   +30% Durability
+#
+# ARCANE - Glass cannon, drop-focused
+#   -10% Damage
+#   +10% XP
+#   +30% Drops
+#   -40% Durability
+#
+# ============================================================
+# ARMOR BONUSES (XP ONLY)
+# ============================================================
+#
+# Jade:     +4% per piece, +9% set bonus  = 25% max
+# Topaz:    +7% per piece, +12% set bonus = 40% max
+# Sapphire: +10% per piece, +15% set bonus = 55% max
+# Ruby:     +14% per piece, +19% set bonus = 75% max
+# Amethyst: +18% per piece, +28% set bonus = 100% max
+#
+# ============================================================
+# ACCESSORY BONUSES
+# ============================================================
+#
+# Accessories provide bonuses to all multiplier types.
+# Effects stack from all equipped accessories in bag slots.
+# See acc-effects.sk for bonus calculation.
+#
+# ============================================================
+
+# ============================================================
+# MULTIPLIER TYPE REGISTRY
+# ============================================================
+
+on script load:
+    # Register all multiplier types
+    set {-multiplier::types::*} to "mining_speed", "drops", "xp", "token", "money", "enchant_proc", "damage" and "durability"
+    
+    # Clear all guards on reload to prevent orphaned loops blocking new ones
+    delete {-guard::multiplier-loop::*}
+    delete {-multiplier::loop::*}
+
+
+# ============================================================
+# GETTERS (fast - just returns cached value)
+# ============================================================
+
+function multiplier_get(p: player, type: text) :: number:
+    set {_val} to {-multiplier::%{_p}'s uuid%::%{_type}%}
+    if {_val} is not set:
+        return 1
+    return {_val}
+
+# Shorthand getters for common use
+function multiplier_getMiningSpeed(p: player) :: number:
+    return multiplier_get({_p}, "mining_speed")
+
+function multiplier_getDrops(p: player) :: number:
+    return multiplier_get({_p}, "drops")
+
+function multiplier_getXP(p: player) :: number:
+    return multiplier_get({_p}, "xp")
+
+function multiplier_getToken(p: player) :: number:
+    return multiplier_get({_p}, "token")
+
+function multiplier_getEnchantProc(p: player) :: number:
+    return multiplier_get({_p}, "enchant_proc")
+
+function multiplier_getDamage(p: player) :: number:
+    return multiplier_get({_p}, "damage")
+
+function multiplier_getMoney(p: player) :: number:
+    return multiplier_get({_p}, "money")
+
+function multiplier_getDurability(p: player) :: number:
+    return multiplier_get({_p}, "durability")
+
+
+# ============================================================
+# ARCHETYPE BONUS CALCULATOR
+# ============================================================
+
+function multiplier_getArchetypeBonus(archetype: text, type: text) :: number:
+    
+    # ──────────────────────────────────────────
+    # PRECISION - Fast single-target miner
+    # +5% Mining Speed
+    # +15% Damage
+    # +30% Tokens
+    # +30% XP
+    # ──────────────────────────────────────────
+    if {_archetype} = "precision":
+        if {_type} = "mining_speed":
+            return 0.05
+        if {_type} = "damage":
+            return 0.15
+        if {_type} = "token":
+            return 0.30
+        if {_type} = "xp":
+            return 0.30
+        if {_type} = "drops":
+            return 0
+        if {_type} = "enchant_proc":
+            return 0
+        if {_type} = "durability":
+            return 0
+    
+    # ──────────────────────────────────────────
+    # DEMOLITION - Tanky AOE miner
+    # -15% Tokens
+    # -10% XP
+    # -10% Enchant Proc
+    # +30% Durability
+    # ──────────────────────────────────────────
+    else if {_archetype} = "demolition":
+        if {_type} = "mining_speed":
+            return 0
+        if {_type} = "damage":
+            return 0
+        if {_type} = "token":
+            return -0.15
+        if {_type} = "xp":
+            return -0.10
+        if {_type} = "drops":
+            return 0
+        if {_type} = "enchant_proc":
+            return -0.10
+        if {_type} = "durability":
+            return 0.30
+    
+    # ──────────────────────────────────────────
+    # ARCANE - Glass cannon, drop-focused
+    # -10% Damage
+    # +10% XP
+    # +30% Drops
+    # -40% Durability
+    # ──────────────────────────────────────────
+    else if {_archetype} = "arcane":
+        if {_type} = "mining_speed":
+            return 0
+        if {_type} = "damage":
+            return -0.10
+        if {_type} = "token":
+            return 0
+        if {_type} = "xp":
+            return 0.10
+        if {_type} = "drops":
+            return 0.30
+        if {_type} = "enchant_proc":
+            return 0
+        if {_type} = "durability":
+            return -0.40
+    
+    # ──────────────────────────────────────────
+    # GLOBAL (or unknown) - No bonuses
+    # ──────────────────────────────────────────
+    return 0
+
+
+# ============================================================
+# MAIN CALCULATOR
+# ============================================================
+
+# Calculate single multiplier type
+function multiplier_calculateType(p: player, type: text) :: number:
+    # Get current archetype
+    set {_archetypeId} to player_getArchetype({_p})
+    
+    if {_archetypeId} = 2:
+        set {_archetype} to "precision"
+    else if {_archetypeId} = 3:
+        set {_archetype} to "demolition"
+    else if {_archetypeId} = 4:
+        set {_archetype} to "arcane"
+    else:
+        set {_archetype} to "global"
+    
+    # Start at base 1.0 (100%)
+    set {_total} to 1.0
+    
+    # Add archetype bonus
+    add multiplier_getArchetypeBonus({_archetype}, {_type}) to {_total}
+    
+    # ──────────────────────────────────────────
+    # PET BONUSES
+    # ──────────────────────────────────────────
+    add pet_getTotalBonus({_p}, {_type}) to {_total}
+    
+    # ──────────────────────────────────────────
+    # ARMOR BONUSES (XP only)
+    # ──────────────────────────────────────────
+    add armor_getTotalBonus({_p}, {_type}) to {_total}
+    
+    # ──────────────────────────────────────────
+    # ACCESSORY BONUSES
+    # ──────────────────────────────────────────
+    add acc_getTotalBonus({_p}, {_type}) to {_total}
+
+    # ──────────────────────────────────────────
+    # SKILL TREE BONUSES
+    # ──────────────────────────────────────────
+    add skilltree_getTotalBonus({_p}, {_type}) to {_total}
+
+    # ──────────────────────────────────────────
+    # PERSONAL BOOSTER BONUS (capped)
+    # ──────────────────────────────────────────
+    add booster_getPersonalBonus({_p}, {_type}) to {_total}
+
+    # ──────────────────────────────────────────
+    # GLOBAL BOOSTER BONUS
+    # ──────────────────────────────────────────
+    add booster_getGlobalBonus({_type}) to {_total}
+
+    # ──────────────────────────────────────────
+    # DISCORD LINK BONUS (+50% tokens, +50% money)
+    # ──────────────────────────────────────────
+    if {data::linked::%{_p}'s uuid%} is set:
+        if {_type} is "token":
+            add 0.50 to {_total}
+        else if {_type} is "money":
+            add 0.50 to {_total}
+
+    # ──────────────────────────────────────────
+    # TEAM BOOSTS (Purchased Upgrades)
+    # ──────────────────────────────────────────
+    set {_teamId} to team_getPlayerTeamID({_p})
+    if {_teamId} > 0:
+        if {_type} is "token":
+            add team_getBoostPercent({_teamId}, "tokens_boost") / 100 to {_total}
+        else if {_type} is "drops":
+            add team_getBoostPercent({_teamId}, "drops_boost") / 100 to {_total}
+        else if {_type} is "mining_speed":
+            add team_getBoostPercent({_teamId}, "mining_speed_boost") / 100 to {_total}
+        else if {_type} is "damage":
+            add team_getBoostPercent({_teamId}, "damage_boost") / 100 to {_total}
+
+    # ──────────────────────────────────────────
+    # TEAM ONLINE BONUS (+3% per online member)
+    # ──────────────────────────────────────────
+    if {_teamId} > 0:
+        if {_type} is "token":
+            add team_getOnlineBonusPercent({_teamId}) to {_total}
+        else if {_type} is "money":
+            add team_getOnlineBonusPercent({_teamId}) to {_total}
+
+    return {_total}
+
+
+# Recalculate ALL multipliers for a player
+function multiplier_recalculate(p: player):
+    set {_uuid} to {_p}'s uuid
+    
+    loop {-multiplier::types::*}:
+        set {_type} to loop-value
+        set {-multiplier::%{_uuid}%::%{_type}%} to multiplier_calculateType({_p}, {_type})
+
+
+# Clear all cached multipliers for a player
+function multiplier_clear(p: player):
+    set {_uuid} to {_p}'s uuid
+    
+    loop {-multiplier::types::*}:
+        delete {-multiplier::%{_uuid}%::%loop-value%}
+
+
+# ============================================================
+# TRIGGER FUNCTIONS (call these when stats change)
+# ============================================================
+
+function multiplier_onLevelUp(p: player):
+    multiplier_recalculate({_p})
+
+function multiplier_onPrestige(p: player):
+    multiplier_recalculate({_p})
+
+function multiplier_onArchetypeSwitch(p: player):
+    multiplier_recalculate({_p})
+
+function multiplier_onArmorChange(p: player):
+    multiplier_recalculate({_p})
+
+function multiplier_onAccessoryChange(p: player):
+    multiplier_recalculate({_p})
+
+function multiplier_onTeamUpgrade(p: player):
+    multiplier_recalculate({_p})
+
+
+# ============================================================
+# EVENTS
+# ============================================================
+
+on join:
+    # Calculate multipliers on join
+    multiplier_recalculate(player)
+    
+    # Start update loop with guard
+    multiplier_startLoop(player)
+
+on quit:
+    # Stop loop
+    delete {-multiplier::loop::%player's uuid%}
+    delete {-guard::multiplier-loop::%player's uuid%}
+    
+    # Clear cache
+    multiplier_clear(player)
+
+
+# Guarded loop - prevents duplicate loops from spawning
+function multiplier_startLoop(p: player):
+    # Guard check - only one loop instance per player
+    {-guard::multiplier-loop::%{_p}'s uuid%} is not set
+    set {-guard::multiplier-loop::%{_p}'s uuid%} to a random uuid
+    
+    set {-multiplier::loop::%{_p}'s uuid%} to true
+    while {-multiplier::loop::%{_p}'s uuid%} is true:
+        wait 15 seconds
+        if {_p} is online:
+            multiplier_recalculate({_p})
+        else:
+            delete {-multiplier::loop::%{_p}'s uuid%}
+            delete {-guard::multiplier-loop::%{_p}'s uuid%}
+            stop
+    
+    delete {-guard::multiplier-loop::%{_p}'s uuid%}
+
+
+# ============================================================
+# DEBUG COMMAND
+# ============================================================
+
+command /multipliers:
+    trigger:
+        set {_uuid} to player's uuid
+        set {_menu} to chest inventory with 4 rows named "&e&lYOUR MULTIPLIERS"
+
+        # Fill with glass
+        set {_filler} to black stained glass pane named "&1"
+        loop 36 times:
+            set slot loop-number - 1 of {_menu} to {_filler}
+
+        # Get archetype name
+        set {_archetypeId} to player_getArchetype(player)
+        if {_archetypeId} = 2:
+            set {_archName} to "&bPrecision"
+        else if {_archetypeId} = 3:
+            set {_archName} to "&cDemolition"
+        else if {_archetypeId} = 4:
+            set {_archName} to "&dArcane"
+        else:
+            set {_archName} to "&7Global"
+
+        # Archetype display in slot 4
+        set {_archInfo} to nether star named "&6&lYour Archetype"
+        add "&7Current: %{_archName}%" to {_archLore::*}
+        add "" to {_archLore::*}
+        add "&7Use &e/arc &7to change" to {_archLore::*}
+        set lore of {_archInfo} to {_archLore::*}
+        set slot 4 of {_menu} to {_archInfo}
+
+        # Multiplier items (slots 10-16, 19-25)
+        set {_slots::*} to 10, 11, 12, 13, 14, 15, 16, 19, 20, 21, 22, 23, 24 and 25
+        set {_slotIndex} to 1
+
+        loop {-multiplier::types::*}:
+            set {_type} to loop-value
+            set {_typeName} to {_type}
+            replace all "_" in {_typeName} with " "
+            set {_typeName} to {_typeName} in strict proper case
+            set {_val} to {-multiplier::%{_uuid}%::%{_type}%} ? 1
+            set {_display} to round({_val} * 100) / 100
+
+            # Choose item based on value
+            if {_val} > 1:
+                set {_item} to emerald named "&a%{_typeName}%"
+                set {_color} to "&a"
+            else if {_val} < 1:
+                set {_item} to redstone named "&c%{_typeName}%"
+                set {_color} to "&c"
+            else:
+                set {_item} to quartz named "&f%{_typeName}%"
+                set {_color} to "&f"
+
+            # Build lore with breakdown
+            add "&7Multiplier: %{_color}%%{_display}%x" to {_itemLore::*}
+            add "" to {_itemLore::*}
+
+            # Get bonuses
+            set {_petBonus} to pet_getTotalBonus(player, {_type})
+            set {_armorBonus} to armor_getTotalBonus(player, {_type})
+            set {_accBonus} to acc_getTotalBonus(player, {_type})
+            set {_skillBonus} to skilltree_getTotalBonus(player, {_type})
+            set {_personalBoosterBonus} to booster_getPersonalBonus(player, {_type})
+            set {_globalBoosterBonus} to booster_getGlobalBonus({_type})
+            set {_teamBonus} to 0
+            set {_teamOnlineBonus} to 0
+            set {_teamId} to team_getPlayerTeamID(player)
+            if {_teamId} > 0:
+                if {_type} is "token":
+                    set {_teamBonus} to team_getBoostPercent({_teamId}, "tokens_boost") / 100
+                    set {_teamOnlineBonus} to team_getOnlineBonusPercent({_teamId})
+                else if {_type} is "drops":
+                    set {_teamBonus} to team_getBoostPercent({_teamId}, "drops_boost") / 100
+                else if {_type} is "mining_speed":
+                    set {_teamBonus} to team_getBoostPercent({_teamId}, "mining_speed_boost") / 100
+                else if {_type} is "damage":
+                    set {_teamBonus} to team_getBoostPercent({_teamId}, "damage_boost") / 100
+                else if {_type} is "money":
+                    set {_teamOnlineBonus} to team_getOnlineBonusPercent({_teamId})
+
+            # Add breakdown
+            if {_petBonus} > 0:
+                set {_petPercent} to round({_petBonus} * 100)
+                add "&8• &dPets: &7+%{_petPercent}%%%" to {_itemLore::*}
+            if {_armorBonus} > 0:
+                set {_armorPercent} to round({_armorBonus} * 100)
+                add "&8• &bArmor: &7+%{_armorPercent}%%%" to {_itemLore::*}
+            if {_accBonus} > 0:
+                set {_accPercent} to round({_accBonus} * 100 * 100) / 100
+                add "&8• &eAccessories: &7+%{_accPercent}%%%" to {_itemLore::*}
+            if {_skillBonus} > 0:
+                set {_skillPercent} to round({_skillBonus} * 100)
+                add "&8• &9Skills: &7+%{_skillPercent}%%%" to {_itemLore::*}
+            if {_teamBonus} > 0:
+                set {_teamPercent} to round({_teamBonus} * 100 * 100) / 100
+                add "&8• &aTeam: &7+%{_teamPercent}%%%" to {_itemLore::*}
+            if {_teamOnlineBonus} > 0:
+                set {_onlinePercent} to round({_teamOnlineBonus} * 100)
+                add "&8• &aOnline: &7+%{_onlinePercent}%%%" to {_itemLore::*}
+            if {_personalBoosterBonus} > 0:
+                set {_boosterPercent} to round({_personalBoosterBonus} * 100)
+                add "&8• &6Booster: &7+%{_boosterPercent}%%%" to {_itemLore::*}
+            if {_globalBoosterBonus} > 0:
+                set {_globalBoosterPercent} to round({_globalBoosterBonus} * 100)
+                add "&8• &bGlobal: &7+%{_globalBoosterPercent}%%%" to {_itemLore::*}
+            if {_type} is "token" or "money":
+                if {data::linked::%{_uuid}%} is set:
+                    add "&8• &5Discord: &7+50%%" to {_itemLore::*}
+
+            set lore of {_item} to {_itemLore::*}
+            set slot {_slots::%{_slotIndex}%} of {_menu} to {_item}
+            add 1 to {_slotIndex}
+            delete {_itemLore::*}
+
+        open {_menu} to player
+        set {-multiplier::menu::%{_uuid}%} to true
+
+
+on inventory click:
+    if {-multiplier::menu::%player's uuid%} is true:
+        cancel event
+
+on inventory close:
+    if {-multiplier::menu::%player's uuid%} is true:
+        delete {-multiplier::menu::%player's uuid%}
