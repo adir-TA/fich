@@ -192,6 +192,8 @@ function fishbarrel_reorganize(p: player):
     set {_uuid} to uuid of {_p}
     set {_scale} to fishbarrel_levelScale({_p})
     set {_max} to fishbarrel_maxFish({_p})
+
+    # Slide all slots within the new capacity to their updated positions
     loop {_max} times:
         set {_n} to loop-number
         if {-fishbarrel::slot::%{_uuid}%::%{_n}%::id} is set:
@@ -204,6 +206,22 @@ function fishbarrel_reorganize(p: player):
                     display transformation: 3
                     display interpolation: 10
                 send packet {_m} to {_p}
+
+    # Remove any slots beyond the new capacity (level downgrade overflow).
+    # 150 is the absolute maximum (level 5), so we only need to check up to that.
+    set {_removed} to 0
+    loop 150 times:
+        set {_n} to {_max} + loop-number
+        if {-fishbarrel::slot::%{_uuid}%::%{_n}%::id} is set:
+            remove fake entity with id {-fishbarrel::slot::%{_uuid}%::%{_n}%::id} for {_p}
+            delete {-fishbarrel::slot::%{_uuid}%::%{_n}%::id}
+            delete {-fishbarrel::slot::%{_uuid}%::%{_n}%::fish}
+            add 1 to {_removed}
+
+    # Clamp the stored count to the new maximum
+    if {_removed} > 0:
+        set {_count} to ({-fishbarrel::count::%{_uuid}%} ? 0)
+        set {-fishbarrel::count::%{_uuid}%} to {_count} - {_removed}
 
 
 # ============================================================
